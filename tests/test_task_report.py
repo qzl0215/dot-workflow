@@ -81,6 +81,36 @@ class ReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'owner_conflict'):
             report.encode(row(zone='decision', running=False))
 
+    def test_project_task_is_independent_and_keeps_original_source(self):
+        task = dict(id='project-1/existing-task', title='独立演示稿', source_kind='project_task',
+                    source_ref='https://example.com/project-1', updatedAt='source-version-1',
+                    row=row(thread='ppt-thread', writer='ppt-thread'))
+        data = snapshot(tasks=[task])
+        result = report.build(data)
+        self.assertTrue(result['routine_ready'])
+        self.assertIn('独立演示稿', result['report'])
+        self.assertIn('https://example.com/project-1', result['report'])
+        self.assertEqual(result['sources'][task['id']]['source_kind'], 'project_task')
+        self.assertEqual(result['baseline'][task['id']]['issue']['source_ref'], task['source_ref'])
+        data.update(tasks=[], baseline=result['baseline'])
+        self.assertIn('独立演示稿', report.build(data)['report'])
+
+    def test_missing_project_source_blocks_routine_ready(self):
+        data = snapshot(tasks=[dict(id='project-1/task', source_kind='project_task', row=row())])
+        self.assertFalse(report.build(data)['routine_ready'])
+
+    def test_id_only_directory_is_disclosed_without_faking_time(self):
+        data = snapshot(threads=[dict(id='thread-1', metadata_available=False)])
+        result = report.build(data)
+        self.assertFalse(result['routine_ready'])
+        self.assertIn('thread_metadata_unavailable', result['report'])
+        data['coverage']['unchanged_gap'] = True
+        result = report.build(data)
+        self.assertTrue(result['routine_ready'])
+        self.assertEqual(result['baseline']['TASK-1']['row']['observed_at'], '2026-01-01T10:00:00Z')
+        data['now'] = '2026-01-01T11:00:01Z'
+        self.assertFalse(report.build(data)['routine_ready'])
+
 
 if __name__ == '__main__':
     unittest.main()
