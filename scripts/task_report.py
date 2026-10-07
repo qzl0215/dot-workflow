@@ -74,7 +74,7 @@ def extract(description):
 
 def build(snapshot):
     now = timestamp(snapshot['now'])
-    issues = snapshot['issues']
+    issues = list(snapshot.get('issues', [])) + list(snapshot.get('tasks', []))
     ids = [issue['id'] for issue in issues]
     if len(ids) != len(set(ids)):
         raise ValueError('duplicate_issue_id')
@@ -88,10 +88,20 @@ def build(snapshot):
         identity = issue['id']
         cached = baseline.get(identity, {})
         row, reasons = None, []
+        source_kind = issue.get('source_kind', 'issue')
+        project_task = source_kind == 'project_task'
+        if source_kind not in ('issue', 'project_task'):
+            reasons.append('unknown_source_kind')
+        if project_task and not issue.get('source_ref'):
+            reasons.append('missing_original_task_source')
+        if project_task and not issue.get('updatedAt'):
+            reasons.append('source_version_unavailable')
         if identity in missing:
             reasons.append('issue_missing_from_current_directory')
         try:
-            if START in (issue.get('description') or ''):
+            if project_task and issue.get('row') is not None:
+                row = validate(issue['row'])
+            elif START in (issue.get('description') or ''):
                 row = extract(issue['description'])
             elif cached.get('issue_updated_at') == issue.get('updatedAt') and cached.get('row'):
                 row = validate(cached['row'])
@@ -122,28 +132,36 @@ def build(snapshot):
             due = issue.get('dueDate')
             if row['zone'] == 'future' and not row['paused'] and due and str(due)[:10] <= now.date().isoformat():
                 reasons.append('future_due_date_review')
-            if native in ('completed', 'canceled') and row['zone'] != 'done':
+            if not project_task and native in ('completed', 'canceled') and row['zone'] != 'done':
                 reasons.append('native_state_conflict')
-            if row['zone'] == 'done' and native not in ('completed', 'canceled'):
+            if not project_task and row['zone'] == 'done' and native not in ('completed', 'canceled'):
                 reasons.append('native_state_conflict')
             thread = threads.get(tid)
             if thread:
-                try:
-                    if timestamp(thread['updatedAt']) > timestamp(row['observed_at']):
-                        reasons.append('new_thread_activity')
-                except (ValueError, KeyError, TypeError):
-                    reasons.append('unknown_thread_time')
+                if thread.get('metadata_available') is False:
+                    reasons.append('thread_metadata_unavailable')
+                else:
+                    try:
+                        if timestamp(thread['updatedAt']) > timestamp(row['observed_at']):
+                            reasons.append('new_thread_activity')
+                    except (ValueError, KeyError, TypeError):
+                        reasons.append('unknown_thread_time')
                 status = thread.get('status')
                 status = status.get('type') if isinstance(status, dict) else status
                 if row['running'] and status in ('idle', 'notLoaded', 'completed', 'failed', 'interrupted'):
                     reasons.append('runtime_state_conflict')
             next_baseline[identity] = {'issue_updated_at': issue.get('updatedAt'), 'row': row,
                                       'issue': {key: issue.get(key) for key in
-                                                ('id', 'title', 'updatedAt', 'statusType', 'url', 'dueDate')}}
+                                                ('id', 'title', 'updatedAt', 'statusType', 'url', 'dueDate',
+                                                 'source_kind', 'source_ref')}}
+            if project_task:
+                next_baseline[identity]['issue']['source_kind'] = 'project_task'
         if reasons:
             checks.append({'issue': identity, 'thread': row.get('thread') if row else None,
                            'reasons': list(dict.fromkeys(reasons))})
-        if row and row['zone'] == 'done' and not reasons:
+        acknowledged = snapshot.get('coverage', {}).get('unchanged_gap') is True
+        only_known_gap = acknowledged and set(reasons) <= {'thread_metadata_unavailable', 'source_version_unavailable'}
+        if row and row['zone'] == 'done' and (not reasons or only_known_gap):
             continue
         zone = row['zone'] if row and row['zone'] != 'done' else 'recover'
         title = str(issue.get('title') or identity).replace('\n', ' ')
@@ -160,6 +178,10 @@ def build(snapshot):
             text = '{}｜原当前摘要待核，由dot沿原Issue补证'.format(entry)
         if reasons:
             text += '；待核：' + ', '.join(dict.fromkeys(reasons))
+        if project_task:
+            source = issue.get('source_ref')
+            source = '[原Project任务](<{}>)'.format(source) if isinstance(source, str) and re.fullmatch(r'https?://[^\s<>]+', source) else '原Project入口待核'
+            text += '；来源：project_task / ' + source
         groups[zone].append(text)
     unmapped = [tid for tid in threads if tid not in bound_threads]
     coverage = snapshot.get('coverage', {})
@@ -176,10 +198,15 @@ def build(snapshot):
         lines.append('')
     if checks:
         lines.append('保留{}项证据/覆盖缺口，dot定向核验；不代表全桌面覆盖。'.format(len(checks)))
-    actionable = [item for item in checks if item.get('issue') is not None or item.get('thread')]
+    stable_gap = coverage.get('unchanged_gap') is True
+    actionable = [item for item in checks if (item.get('issue') is not None or item.get('thread'))
+                  and not (stable_gap and set(item['reasons']) <= {'thread_metadata_unavailable', 'source_version_unavailable'})]
     routine = not actionable and (not checks or coverage.get('unchanged_gap') is True)
     return {'report': '\n'.join(lines).strip(), 'checks': checks,
             'baseline': next_baseline, 'routine_ready': routine,
+            'sources': {issue['id']: {'source_kind': issue.get('source_kind', 'issue'),
+                                     'source_ref': issue.get('source_ref') or issue.get('url')}
+                        for issue in issues},
             'action': 'review_checks' if not routine else 'rendered', 'starts': 0, 'writes': 0}
 
 
