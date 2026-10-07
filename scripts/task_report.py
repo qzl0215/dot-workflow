@@ -82,13 +82,16 @@ def build(snapshot):
     missing = set(baseline) - set(ids)
     issues = list(issues) + [dict(baseline[key].get('issue', {}), id=key) for key in sorted(missing)]
     threads = {item['id']: item for item in snapshot.get('threads', [])}
+    excluded_threads = {key: item for key, item in threads.items()
+                        if item.get('scope') == 'historical_nonbusiness' and item.get('scope_evidence')
+                        and item.get('new_activity') is not True}
     groups = {key: [] for key in ZONES}
-    checks, next_baseline, bound_threads = [], {}, set()
+    checks, next_baseline, bound_threads, closed = [], {}, set(), []
     for issue in issues:
         identity = issue['id']
         cached = baseline.get(identity, {})
         row, reasons = None, []
-        source_kind = issue.get('source_kind', 'issue')
+        source_kind = issue.get('source_kind') or 'issue'
         project_task = source_kind == 'project_task'
         if source_kind not in ('issue', 'project_task'):
             reasons.append('unknown_source_kind')
@@ -109,13 +112,48 @@ def build(snapshot):
                 row = extract(issue.get('description'))
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             reasons.append(str(error))
+        # Terminal evidence is a source fact, not a fabricated executor row.
+        version_matches = cached.get('issue_updated_at') == issue.get('updatedAt')
+        terminal = issue.get('terminal_verified') is True
+        evidence = issue.get('terminal_evidence')
+        if row and row['zone'] == 'done' and issue.get('statusType') in ('completed', 'canceled'):
+            terminal = True
+            evidence = evidence or '已核原当前摘要：' + str(row['observed_at'])
+        if not terminal and version_matches:
+            terminal = cached.get('terminal_verified') is True
+            evidence = cached.get('terminal_evidence')
+        tid = (row or {}).get('thread') or issue.get('thread') or (cached.get('row') or {}).get('thread') or cached.get('issue', {}).get('thread')
+        activity = issue.get('new_activity') is True
+        thread = threads.get(tid)
+        if thread:
+            activity = activity or thread.get('new_activity') is True
+            try:
+                since = (row or {}).get('observed_at') or issue.get('terminal_observed_at') or (cached.get('row') or {}).get('observed_at') or cached.get('issue', {}).get('terminal_observed_at')
+                activity = activity or timestamp(thread['updatedAt']) > timestamp(since)
+            except (ValueError, KeyError, TypeError):
+                pass
+        if terminal and evidence and not activity and identity not in missing and not project_task and source_kind == 'issue' and issue.get('statusType') in ('completed', 'canceled') and (not row or row['zone'] == 'done'):
+            if tid:
+                bound_threads.add(tid)
+            closed.append({'id': identity, 'statusType': issue['statusType'], 'evidence': evidence})
+            next_baseline[identity] = {'issue_updated_at': issue.get('updatedAt'),
+                                      'terminal_verified': True, 'terminal_evidence': evidence,
+                                      'issue': {key: issue.get(key) for key in
+                                                ('id', 'title', 'updatedAt', 'statusType', 'url', 'dueDate')}}
+            next_baseline[identity]['issue'].update(thread=tid, terminal_observed_at=issue.get('terminal_observed_at') or (row or {}).get('observed_at') or cached.get('issue', {}).get('terminal_observed_at'))
+            continue
         if row:
             row = dict(row)
             tid = row['thread']
             if tid:
                 bound_threads.add(tid)
+                if tid in excluded_threads:
+                    reasons.append('scope_binding_conflict')
+                    excluded_threads.pop(tid)
             else:
-                reasons.append('unmapped_thread')
+                source = issue.get('source_ref') or issue.get('url')
+                if row['running'] or not isinstance(source, str) or not re.fullmatch(r'https?://[^\s<>]+', source):
+                    reasons.append('unmapped_thread')
             try:
                 observed = timestamp(row['observed_at'])
                 progress = timestamp(row['progress_at']) if row['progress_at'] else None
@@ -167,6 +205,9 @@ def build(snapshot):
         title = str(issue.get('title') or identity).replace('\n', ' ')
         title = title.replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]')
         entry = '[{}](codex://threads/{})'.format(title, row['thread']) if row and row['thread'] else title
+        original = issue.get('source_ref') or issue.get('url')
+        if row and not row['thread'] and isinstance(original, str) and re.fullmatch(r'https?://[^\s<>]+', original):
+            entry = '[{}](<{}>)'.format(title, original)
         if row:
             text = '{}｜{}；下一步：{}（{}）'.format(entry, row['phase'], row['next'], row['owner'])
             if row['paused']:
@@ -174,6 +215,8 @@ def build(snapshot):
             elif zone == 'dot' and not row['running']:
                 text += '；等待，未计真实执行'
             text += '；进展时间：{}'.format(row['progress_at'] or '未知')
+            if not row['thread']:
+                text += '；原任务入口，暂无专属线程'
         else:
             text = '{}｜原当前摘要待核，由dot沿原Issue补证'.format(entry)
         if reasons:
@@ -183,7 +226,7 @@ def build(snapshot):
             source = '[原Project任务](<{}>)'.format(source) if isinstance(source, str) and re.fullmatch(r'https?://[^\s<>]+', source) else '原Project入口待核'
             text += '；来源：project_task / ' + source
         groups[zone].append(text)
-    unmapped = [tid for tid in threads if tid not in bound_threads]
+    unmapped = [tid for tid in threads if tid not in bound_threads and tid not in excluded_threads]
     coverage = snapshot.get('coverage', {})
     if not coverage.get('issues_complete'):
         checks.append({'issue': None, 'reasons': ['issue_coverage_gap']})
@@ -198,13 +241,19 @@ def build(snapshot):
         lines.append('')
     if checks:
         lines.append('保留{}项证据/覆盖缺口，dot定向核验；不代表全桌面覆盖。'.format(len(checks)))
+    if excluded_threads or closed:
+        lines.append('按已有证据排除{}项终结待办、{}条历史非业务目录；新活动仍核。'.format(len(closed), len(excluded_threads)))
     stable_gap = coverage.get('unchanged_gap') is True
     actionable = [item for item in checks if (item.get('issue') is not None or item.get('thread'))
                   and not (stable_gap and set(item['reasons']) <= {'thread_metadata_unavailable', 'source_version_unavailable'})]
     routine = not actionable and (not checks or coverage.get('unchanged_gap') is True)
+    scope_checks = [item for item in checks if item.get('issue') is None]
+    task_checks = [item for item in actionable if item.get('issue') is not None]
     return {'report': '\n'.join(lines).strip(), 'checks': checks,
+            'task_checks': task_checks, 'scope_checks': scope_checks,
             'baseline': next_baseline, 'routine_ready': routine,
-            'sources': {issue['id']: {'source_kind': issue.get('source_kind', 'issue'),
+            'closed': closed, 'excluded_threads': excluded_threads,
+            'sources': {issue['id']: {'source_kind': issue.get('source_kind') or 'issue',
                                      'source_ref': issue.get('source_ref') or issue.get('url')}
                         for issue in issues},
             'action': 'review_checks' if not routine else 'rendered', 'starts': 0, 'writes': 0}

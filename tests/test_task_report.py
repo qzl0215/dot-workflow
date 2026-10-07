@@ -111,6 +111,99 @@ class ReportTests(unittest.TestCase):
         data['now'] = '2026-01-01T11:00:01Z'
         self.assertFalse(report.build(data)['routine_ready'])
 
+    def test_verified_terminal_without_head_or_executor_is_not_recover(self):
+        data = snapshot()
+        data['issues'] = [dict(id='TASK-1', title='已取消初始化', statusType='canceled', updatedAt='v1',
+                               terminal_verified=True, terminal_evidence='原取消回执')]
+        result = report.build(data)
+        self.assertTrue(result['routine_ready'])
+        self.assertNotIn('已取消初始化', result['report'])
+        self.assertEqual(len(result['closed']), 1)
+        self.assertNotIn('row', result['baseline']['TASK-1'])
+        data['issues'][0]['statusType'] = 'completed'
+        self.assertTrue(report.build(data)['routine_ready'])
+
+    def test_terminal_evidence_does_not_hide_new_business_activity(self):
+        data = snapshot()
+        data['issues'][0].update(statusType='completed', description='', terminal_verified=True,
+                                 terminal_evidence='前轮验收', new_activity=True)
+        result = report.build(data)
+        self.assertFalse(result['routine_ready'])
+        self.assertIn('独立任务', result['report'])
+        self.assertEqual(result['closed'], [])
+
+    def test_terminal_without_head_still_checks_previously_bound_new_turn(self):
+        data = snapshot()
+        data['issues'][0].update(statusType='completed', description='', terminal_verified=True,
+                                 terminal_evidence='前轮验收')
+        data['baseline'] = {'TASK-1': dict(issue_updated_at='old-version', row=row(zone='done', running=False))}
+        data['threads'] = [dict(id='thread-1', updatedAt='2026-01-01T10:01:00Z')]
+        result = report.build(data)
+        self.assertFalse(result['routine_ready'])
+        self.assertEqual(result['closed'], [])
+
+    def test_terminal_cache_invalidates_on_source_version_change(self):
+        data = snapshot()
+        data['issues'][0].update(statusType='completed', description='', terminal_verified=True,
+                                 terminal_evidence='原验收')
+        previous = report.build(data)['baseline']
+        issue = dict(data['issues'][0]);issue.pop('terminal_verified');issue.pop('terminal_evidence')
+        data.update(issues=[issue], baseline=previous)
+        self.assertTrue(report.build(data)['routine_ready'])
+        issue['updatedAt'] = 'new-version'
+        self.assertFalse(report.build(data)['routine_ready'])
+
+    def test_only_verified_historical_scope_is_excluded(self):
+        data = snapshot(threads=[dict(id='old-thread', scope='historical_nonbusiness', scope_evidence='已核原目录'),
+                                 dict(id='new-thread'), dict(id='unverified-old', scope='historical_nonbusiness')])
+        result = report.build(data)
+        self.assertEqual(set(result['excluded_threads']), {'old-thread'})
+        self.assertEqual({x.get('thread') for x in result['checks']}, {'new-thread', 'unverified-old'})
+        data['threads'][0]['new_activity'] = True
+        self.assertIn('old-thread', {x.get('thread') for x in report.build(data)['checks']})
+
+    def test_scope_exclusion_cannot_override_a_current_task_binding(self):
+        data = snapshot(threads=[dict(id='thread-1', scope='historical_nonbusiness', scope_evidence='旧基线', metadata_available=False)])
+        result = report.build(data)
+        self.assertIn('scope_binding_conflict', result['checks'][0]['reasons'])
+        self.assertFalse(result['routine_ready'])
+        self.assertNotIn('thread-1', result['excluded_threads'])
+
+    def test_terminal_cache_keeps_observation_for_later_thread_activity(self):
+        data = snapshot(row(zone='done', running=False))
+        data['issues'][0]['statusType'] = 'completed'
+        cached = report.build(data)['baseline']
+        data['issues'][0].pop('description')
+        data['baseline'] = cached
+        cached = report.build(data)['baseline']
+        self.assertEqual(cached['TASK-1']['issue']['terminal_observed_at'], '2026-01-01T10:00:00Z')
+        data.update(baseline=cached, threads=[dict(id='thread-1', updatedAt='2026-01-01T10:05:00Z')])
+        self.assertFalse(report.build(data)['routine_ready'])
+
+    def test_missing_terminal_task_still_discloses_directory_gap(self):
+        data = snapshot(row(zone='done', running=False))
+        data['issues'][0]['statusType'] = 'completed'
+        cached = report.build(data)['baseline']
+        result = report.build(snapshot(issues=[], baseline=cached))
+        self.assertIn('issue_missing_from_current_directory', result['checks'][0]['reasons'])
+        self.assertFalse(result['routine_ready'])
+
+    def test_waiting_task_uses_original_entry_without_fake_thread(self):
+        data = snapshot(row(zone='followup', owner='user', running=False, thread=None))
+        data['issues'][0].update(statusType='unstarted', url='https://example.com/task-1')
+        result = report.build(data)
+        self.assertTrue(result['routine_ready'])
+        self.assertIn('https://example.com/task-1', result['report'])
+        self.assertIsNone(result['baseline']['TASK-1']['row']['thread'])
+
+    def test_verified_done_without_thread_and_progress_time_needs_no_fake_identity(self):
+        data = snapshot(row(zone='done', thread=None, progress_at=None, owner='user', running=False))
+        data['issues'][0].update(statusType='completed')
+        result = report.build(data)
+        self.assertTrue(result['routine_ready'])
+        self.assertEqual(result['checks'], [])
+        self.assertEqual(len(result['closed']), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
