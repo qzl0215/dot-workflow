@@ -39,7 +39,7 @@ python3 -B scripts/check.py --build <仓库外输出目录> --ref <完整合并�
 gh release create <版本> <输出目录>/dot-workflow.zip <输出目录>/SHA256SUMS --repo qzl0215/dot-workflow --verify-tag --title <版本> --notes-file <发布说明文件>
 ```
 
-版本取 `SKILL.md`，同步 `CHANGELOG.md`；只有 main/tag 已确认一致且包核验通过后才能发布。发布失败先核远端是否已有 Release 和资产，再从同一 tag 恢复；已发布资产不覆盖。发布后重新下载，核对版本、文件清单和 SHA-256；公开源码、tag 和分发包必须一致。按语义化版本递增修复、兼容能力或破坏性变更。
+版本取工程文件 `VERSION`，构建时写入分发包的 `manifest.json`；技能 frontmatter 仅保留 `name` 与 `description`，同步 `CHANGELOG.md`；只有 main/tag 已确认一致且包核验通过后才能发布。发布失败先核远端是否已有 Release 和资产，再从同一 tag 恢复；已发布资产不覆盖。发布后重新下载，核对版本、文件清单和 SHA-256；公开源码、tag 和分发包必须一致。按语义化版本递增修复、兼容能力或破坏性变更。
 
 ## 安装交接与回退
 
