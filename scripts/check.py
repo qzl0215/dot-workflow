@@ -13,7 +13,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = frozenset({
     'SKILL.md', 'agents/openai.yaml', 'assets/icon.svg',
-    'references/grill-me-zh.md', 'references/closure-checks-zh.md',
+    'references/questions.md', 'references/closure-checks-zh.md',
     'LICENSE', 'NOTICE.md',
 })
 SOURCE = RUNTIME | frozenset({
@@ -68,8 +68,8 @@ def validate(root):
     for node in svg.iter():
         require(node.tag.rsplit('}', 1)[-1] not in {'script', 'foreignObject'}, 'active SVG content')
         require(not any(k.rsplit('}', 1)[-1].startswith('on') or k.rsplit('}', 1)[-1] == 'href' for k in node.attrib), 'external or active SVG attribute')
-    upstream = (root/'references/grill-me-zh.md').read_text()
-    license_tail = upstream.split('## 上游许可原文\n\n')[-1]
+    upstream = (root/'NOTICE.md').read_text()
+    license_tail = upstream.split('## Third-party license\n\n')[-1]
     require('Copyright (c) 2026 Matt Pocock' in license_tail and license_tail.rstrip().endswith('SOFTWARE.'), 'missing upstream MIT notice')
     require((root/'LICENSE').read_text().startswith('MIT License\n'), 'missing project license')
     return version

@@ -32,7 +32,3 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
 ```
 
 每次改动使用独立分支与 worktree，审阅差异后直接 merge 到最新 main，不设 PR 门槛。最终合并树验证、发布、下载回验和安装交接见 [CONTRIBUTING.md](CONTRIBUTING.md)。行为验收场景与证据边界见 [evals/cases.md](evals/cases.md)。
-
-## 来源与许可
-
-项目采用 [MIT](LICENSE)。反向质询参考 Matt Pocock 的 MIT 作品，保留固定来源、作者和完整许可；详见 [NOTICE.md](NOTICE.md) 与[中文方法参考](references/grill-me-zh.md)。
