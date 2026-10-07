@@ -42,7 +42,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             check.validate(self.root)
 
     def test_missing_attribution_blocks_release(self):
-        reference = self.root/'references/grill-me-zh.md'
+        reference = self.root/'NOTICE.md'
         reference.write_text(reference.read_text().replace('Copyright (c) 2026 Matt Pocock', ''))
         with self.assertRaisesRegex(ValueError, 'upstream MIT'):
             check.validate(self.root)
