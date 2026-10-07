@@ -24,6 +24,12 @@ class ReleaseBoundaryTests(unittest.TestCase):
     def test_public_candidate_validates(self):
         self.assertRegex(check.validate(self.root), r'^\d+\.\d+\.\d+$')
 
+    def test_extra_frontmatter_field_blocks_release(self):
+        skill = self.root/'SKILL.md'
+        skill.write_text(skill.read_text().replace('name: dot-workflow\n', 'name: dot-workflow\nversion: 1.0.3\n'))
+        with self.assertRaisesRegex(ValueError, 'only name and description'):
+            check.validate(self.root)
+
     def test_unlisted_file_blocks_release(self):
         (self.root/'notes.txt').write_text('not part of the release')
         with self.assertRaisesRegex(ValueError, 'extra='):

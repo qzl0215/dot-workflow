@@ -17,7 +17,7 @@ RUNTIME = frozenset({
     'LICENSE', 'NOTICE.md',
 })
 SOURCE = RUNTIME | frozenset({
-    '.gitignore', 'AGENTS.md', 'README.md', 'CONTRIBUTING.md',
+    '.gitignore', 'AGENTS.md', 'README.md', 'CONTRIBUTING.md', 'VERSION',
     'CHANGELOG.md', 'scripts/check.py', 'tests/test_check.py', 'evals/cases.md',
 })
 IGNORED = {'.git', '__pycache__', 'dist', '.DS_Store'}
@@ -46,9 +46,10 @@ def validate(root):
     require(skill.startswith('---\n') and '\n---\n' in skill[4:], 'missing skill frontmatter')
     meta = skill.split('---', 2)[1]
     require(re.search(r'^name: dot-workflow$', meta, re.M), 'wrong skill identity')
-    match = re.search(r'^version: ((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$', meta, re.M)
-    require(match is not None, 'missing stable semantic version')
-    version = match.group(1)
+    fields = [line.split(':', 1)[0] for line in meta.strip().splitlines()]
+    require(sorted(fields) == ['description', 'name'], 'skill frontmatter must contain only name and description')
+    version = (root/'VERSION').read_text().strip()
+    require(re.fullmatch(r'(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)', version) is not None, 'missing stable semantic version in VERSION')
     require(f'## [{version}]' in (root / 'CHANGELOG.md').read_text(), 'missing changelog version')
     for name in files:
         if not name.endswith('.md'):
