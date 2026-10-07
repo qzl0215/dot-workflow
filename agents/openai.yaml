@@ -1,0 +1,13 @@
+interface:
+  display_name: dot 工作流
+  short_description: 先复用已有工作，再问清需求、收窄方案，把任务推进到有证据的结果
+  default_prompt: 使用 $dot-workflow 先问清目标与验收，再规划、推进并验证结果。
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  allow_implicit_invocation: true
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
