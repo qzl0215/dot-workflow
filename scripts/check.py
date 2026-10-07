@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = frozenset({
     'SKILL.md', 'agents/openai.yaml', 'assets/icon.svg',
     'references/questions.md', 'references/closure-checks-zh.md',
+    'references/task-status.md',
     'LICENSE', 'NOTICE.md',
 })
 SOURCE = RUNTIME | frozenset({
