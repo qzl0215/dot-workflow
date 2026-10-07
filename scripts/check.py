@@ -15,11 +15,13 @@ RUNTIME = frozenset({
     'SKILL.md', 'agents/openai.yaml', 'assets/icon.svg',
     'references/questions.md', 'references/closure-checks-zh.md',
     'references/task-status.md',
+    'scripts/task_report.py',
     'LICENSE', 'NOTICE.md',
 })
 SOURCE = RUNTIME | frozenset({
     '.gitignore', 'AGENTS.md', 'README.md', 'CONTRIBUTING.md', 'VERSION',
     'CHANGELOG.md', 'scripts/check.py', 'tests/test_check.py', 'evals/cases.md',
+    'tests/test_task_report.py',
 })
 IGNORED = {'.git', '__pycache__', 'dist', '.DS_Store'}
 
