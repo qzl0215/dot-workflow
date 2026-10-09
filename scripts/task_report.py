@@ -9,8 +9,9 @@ import sys
 
 START = '<!-- task-report:v1 -->'
 END = '<!-- /task-report -->'
-ZONES = {'decision': '🔵待你决策', 'followup': '🟠待你跟进',
-         'future': '📅未来待办', 'dot': '🔧dot进行中', 'recover': '🚨待dot重新跟进'}
+ZONES = {'decision': '【本人取舍】🔵待你决策', 'followup': '【本人操作或验收】🟠待你跟进',
+         'future': '【未来或暂停】📅未来待办', 'dot': '【dot推进与待核】',
+         'recover': '【dot恢复与核查】🚨待dot重新跟进'}
 REQUIRED = {'zone', 'phase', 'next', 'owner', 'thread', 'writer',
             'progress_at', 'observed_at', 'running', 'paused'}
 
@@ -72,6 +73,28 @@ def extract(description):
     return validate(json.loads(description[start + len(START):end]))
 
 
+def cell(value):
+    """Keep one business item on one Markdown table row."""
+    return str(value).replace('\\', '\\\\').replace('|', '\\|').replace('\r', ' ').replace('\n', ' ')
+
+
+def current_thread_state(thread, snapshot, now):
+    """Only a state read in this report's observation window proves running."""
+    if not thread:
+        return None
+    try:
+        checked = timestamp(thread.get('observed_at'))
+        start = timestamp(snapshot.get('observation_started_at', snapshot['now']))
+        if not start <= checked <= now:
+            return None
+    except (ValueError, TypeError):
+        return None
+    status = thread.get('status')
+    status = status.get('type') if isinstance(status, dict) else status
+    return status if status in ('running', 'queued', 'pending', 'starting', 'idle',
+                                'completed', 'failed', 'interrupted') else None
+
+
 def build(snapshot):
     now = timestamp(snapshot['now'])
     issues = list(snapshot.get('issues', [])) + list(snapshot.get('tasks', []))
@@ -125,6 +148,8 @@ def build(snapshot):
         tid = (row or {}).get('thread') or issue.get('thread') or (cached.get('row') or {}).get('thread') or cached.get('issue', {}).get('thread')
         activity = issue.get('new_activity') is True
         thread = threads.get(tid)
+        runtime = current_thread_state(thread, snapshot, now)
+        activity = activity or runtime == 'running'
         if thread:
             activity = activity or thread.get('new_activity') is True
             try:
@@ -145,6 +170,8 @@ def build(snapshot):
         if row:
             row = dict(row)
             tid = row['thread']
+            thread = threads.get(tid)
+            runtime = current_thread_state(thread, snapshot, now)
             if tid:
                 bound_threads.add(tid)
                 if tid in excluded_threads:
@@ -159,7 +186,7 @@ def build(snapshot):
                 progress = timestamp(row['progress_at']) if row['progress_at'] else None
                 if observed > now or (progress and progress > observed):
                     reasons.append('time_conflict')
-                active = (row['running'] or issue.get('statusType') == 'started') and not row['paused']
+                active = (runtime == 'running' or row['running'] or issue.get('statusType') == 'started') and not row['paused']
                 if active and progress is None:
                     reasons.append('unknown_progress_time')
                 elif active and (now - progress).total_seconds() > 3600:
@@ -184,13 +211,13 @@ def build(snapshot):
                             reasons.append('new_thread_activity')
                     except (ValueError, KeyError, TypeError):
                         reasons.append('unknown_thread_time')
-                status = thread.get('status')
-                status = status.get('type') if isinstance(status, dict) else status
-                if row['running'] and status in ('idle', 'notLoaded', 'completed', 'failed', 'interrupted'):
-                    reasons.append('runtime_state_conflict')
+            if tid and row['zone'] == 'dot' and runtime is None:
+                reasons.append('runtime_state_unverified')
+            if runtime is not None and row['running'] != (runtime == 'running'):
+                reasons.append('runtime_state_conflict')
             next_baseline[identity] = {'issue_updated_at': issue.get('updatedAt'), 'row': row,
                                       'issue': {key: issue.get(key) for key in
-                                                ('id', 'title', 'updatedAt', 'statusType', 'url', 'dueDate',
+                                                ('id', 'title', 'business_title', 'updatedAt', 'statusType', 'url', 'dueDate',
                                                  'source_kind', 'source_ref')}}
             if project_task:
                 next_baseline[identity]['issue']['source_kind'] = 'project_task'
@@ -202,30 +229,40 @@ def build(snapshot):
         if row and row['zone'] == 'done' and (not reasons or only_known_gap):
             continue
         zone = row['zone'] if row and row['zone'] != 'done' else 'recover'
-        title = str(issue.get('title') or identity).replace('\n', ' ')
-        title = title.replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]')
-        entry = '[{}](codex://threads/{})'.format(title, row['thread']) if row and row['thread'] else title
+        title = issue.get('business_title') or issue.get('title')
+        title = str(title) if title and title != identity else '业务事项名称待补'
+        title = title.replace('[', '\\[').replace(']', '\\]')
+        entry = '【{}】'.format(title)
+        if row and row['thread']:
+            entry += ' [执行入口](codex://threads/{})'.format(row['thread'])
         original = issue.get('source_ref') or issue.get('url')
-        if row and not row['thread'] and isinstance(original, str) and re.fullmatch(r'https?://[^\s<>]+', original):
-            entry = '[{}](<{}>)'.format(title, original)
+        if isinstance(original, str) and re.fullmatch(r'https?://[^\s<>]+', original):
+            entry += ' [原任务](<{}>)'.format(original)
         if row:
-            text = '{}｜{}；下一步：{}（{}）'.format(entry, row['phase'], row['next'], row['owner'])
+            fact = row['phase']
+            next_action = row['next']
             if row['paused']:
-                text += '；暂停，未到恢复条件不催'
-            elif zone == 'dot' and not row['running']:
-                text += '；等待，未计真实执行'
-            text += '；进展时间：{}'.format(row['progress_at'] or '未知')
-            if not row['thread']:
-                text += '；原任务入口，暂无专属线程'
+                fact = '📅{}；暂停，未到恢复条件不催'.format(fact)
+            elif zone == 'dot':
+                if runtime == 'running':
+                    fact = '🔧独立线程当前运行；最近进展：{}；状态核对：{}'.format(fact, thread['observed_at'])
+                elif runtime in ('queued', 'pending', 'starting'):
+                    fact = '⏳请求排队或启动中，尚未核实运行；最近记录：{}'.format(fact)
+                elif runtime in ('idle', 'completed', 'failed', 'interrupted'):
+                    fact = '⏳线程已停止运行；最近进展：{}'.format(fact)
+                elif not tid:
+                    fact = '⏳等待回执或具体条件；最近记录：{}'.format(fact)
+                else:
+                    fact = '⏳等待当前线程状态回执；最近记录：{}'.format(fact)
+            else:
+                icon = {'decision': '🔵', 'followup': '🟠', 'future': '📅', 'recover': '🚨'}[zone]
+                fact = icon + fact
         else:
-            text = '{}｜原当前摘要待核，由dot沿原Issue补证'.format(entry)
+            fact = '🚨当前结果与责任待核'
+            next_action = 'dot 沿原任务补齐证据与下一步'
         if reasons:
-            text += '；待核：' + ', '.join(dict.fromkeys(reasons))
-        if project_task:
-            source = issue.get('source_ref')
-            source = '[原Project任务](<{}>)'.format(source) if isinstance(source, str) and re.fullmatch(r'https?://[^\s<>]+', source) else '原Project入口待核'
-            text += '；来源：project_task / ' + source
-        groups[zone].append(text)
+            fact += '；证据或可见范围待核'
+        groups[zone].append('| {} | {} | {} |'.format(cell(entry), cell(fact), cell(next_action)))
     unmapped = [tid for tid in threads if tid not in bound_threads and tid not in excluded_threads]
     coverage = snapshot.get('coverage', {})
     if not coverage.get('issues_complete'):
@@ -234,15 +271,16 @@ def build(snapshot):
         checks.append({'issue': None, 'reasons': ['thread_coverage_gap']})
     for tid in unmapped:
         checks.append({'issue': None, 'thread': tid, 'reasons': ['unmapped_thread']})
-    lines = ['核对：{}｜{}'.format(snapshot['now'], coverage.get('label', '覆盖范围未提供'))]
+    lines = ['【核对范围】截至 {}；{}。'.format(snapshot['now'], cell(coverage.get('label', '覆盖范围未提供'))), '']
     for key, label in ZONES.items():
         lines.append(label)
-        lines.extend(groups[key] or ['无'])
+        lines.extend(['', '| 事项 | 结果、影响或卡点 | 下一步 |', '| --- | --- | --- |'])
+        lines.extend(groups[key] or ['| 暂无事项 | — | — |'])
         lines.append('')
     if checks:
-        lines.append('保留{}项证据/覆盖缺口，dot定向核验；不代表全桌面覆盖。'.format(len(checks)))
+        lines.extend(['【核验缺口】🚨dot 将定向核对缺失证据与可见范围；当前报告不代表全桌面覆盖。', ''])
     if excluded_threads or closed:
-        lines.append('按已有证据排除{}项终结待办、{}条历史非业务目录；新活动仍核。'.format(len(closed), len(excluded_threads)))
+        lines.append('【范围说明】已核结束事项和历史非业务目录已退出当前待办；新活动仍会复核。')
     stable_gap = coverage.get('unchanged_gap') is True
     actionable = [item for item in checks if (item.get('issue') is not None or item.get('thread'))
                   and not (stable_gap and set(item['reasons']) <= {'thread_metadata_unavailable', 'source_version_unavailable'})]
@@ -253,6 +291,7 @@ def build(snapshot):
             'task_checks': task_checks, 'scope_checks': scope_checks,
             'baseline': next_baseline, 'routine_ready': routine,
             'closed': closed, 'excluded_threads': excluded_threads,
+            'thread_observations': threads,
             'sources': {issue['id']: {'source_kind': issue.get('source_kind') or 'issue',
                                      'source_ref': issue.get('source_ref') or issue.get('url')}
                         for issue in issues},
